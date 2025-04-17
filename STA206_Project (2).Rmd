@@ -1,0 +1,1157 @@
+---
+title: "STA206_Project"
+author: "Hamidreza Attari"
+date: "2024-11-17"
+output:
+  html_document: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+# 1. Preparation
+
+1.  Response variables in this project are Plasma
+    beta-carotene("BETAPLASMA") and Plasma Retinol("RETPLASMA").
+
+## 1-1. Data Checking
+
+```{r}
+library(car)
+library(MASS)
+# loading data
+data = read.table("C:/Users/hratt/Downloads/Plasma.txt", header = TRUE, sep = "", stringsAsFactors = FALSE)
+# reorder variables
+data = data[, c(2,3,5,1,4,6:14)] 
+
+# check data type
+sapply(data, class)
+
+# check missing value
+sapply(data, function(x) sum(is.na(x)))
+```
+
+We can see the database do not contain missing data.
+
+## 1-2. Data Preprocessing
+
+@@@ We should denote "SEX", "SMOKSTAT", and "VITUSE" as categorical variables and the rest variables should be quantitative variables.
+
+```{r}
+# transfer "SEX", "SMOKSTAT", and "VITUSE" to dummy variable
+data$SEX <- as.factor(data$SEX)
+data$SMOKSTAT <- as.factor(data$SMOKSTAT)
+data$VITUSE <- as.factor(data$VITUSE)
+
+levels(data$SEX)
+levels(data$SMOKSTAT)
+levels(data$VITUSE)
+
+# Draw plots to depict the distribution of each variable
+par(mfrow = c(2, 3))
+for(i in 4:14) {
+hist(data[, i], main=paste("Histogram of", names(data)[i]), xlab = paste("Patient\'s", names(data)[i]))}
+
+par(mfrow = c(1, 1))
+pairs(data[,4:14])
+cor(data[,4:14])
+
+VIF = diag(solve(cor(data[,4:12])))
+VIF
+```
+
+@@@ We can see CALORIES and FAT have a very high correlation and the VIF of
+CALORIES is over $10$, so we should delete CALORIES to to prevent
+subsequent multicollinearity problems.
+
+```{r}
+# delete CALORIES
+data$CALORIES <- NULL
+VIF = diag(solve(cor(data[,4:11])))
+VIF
+```
+
+According to the value of VIF, we can say the rest of the X variables do not have a severe multicolinearity problem.
+
+According to the plots, we can drop some unreasonable data off the model.
+
+```{r}
+# drop some unreasonable data off the model.
+data = data[data$BETAPLASMA > 0, ]
+```
+
+@@@ Besides, based on the distribution of ALCOHOL, we should treat this variable to categorical variable. (easy to interpret)
+
+@@@ Level 1: 0 drinks; Level 2: 1-7 drinks; Level 3: >=8 drinks.
+
+```{r}
+# transform ALCOHOL to categorical data
+data$ALCOHOL_Category <- cut(data$ALCOHOL,
+                             breaks = c(-Inf, 0, 7, Inf),
+                             labels = c("zero", "Normal", "Heavy"))
+
+data$ALCOHOL_Category <- as.factor(data$ALCOHOL_Category)
+
+# pie plot (ignore)
+library(ggplot2)
+ggplot(data, aes(x = "", fill = ALCOHOL_Category)) +
+  geom_bar(width = 1, stat = "count") + 
+  coord_polar(theta = "y") +
+  labs(title = "Distribution of ALCOHOL Categories", fill = "Category")
+
+```
+
+## 1-3. Data Splitting
+
+@@@ 
+```{r}
+set.seed(206) 
+n <- nrow(data)  # sample size
+train_size <- floor(0.8 * n)  # training data = 80%
+train_indices <- sample(seq_len(n), size = train_size)
+
+# construct training data and validation data
+train_data <- data[train_indices, ]           # training data
+validation_data <- data[-train_indices, ]     # validation data
+
+```
+
+Plot the distribution of the variables in the training set.
+
+```{r}
+# Draw plots to depict the distribution of each variable in the training set
+par(mfrow = c(2, 3))
+for(i in 4:13) {
+hist(train_data[, i], main=paste("Histogram of", names(train_data)[i]), xlab = paste("Patient\'s", names(train_data)[i]))}
+```
+
+## 1-4. Preliminary regression
+
+
+```{r}
+# Preliminary regression (First-order model)
+Model.1a = lm(BETAPLASMA ~ SEX + SMOKSTAT + VITUSE + AGE + QUETELET + FAT + FIBER + ALCOHOL_Category + CHOLESTEROL + BETADIET + RETDIET, data = train_data)
+summary(Model.1a)
+
+par(mfrow = c(1, 2))
+plot(Model.1a,which=1:2)
+par(mfrow = c(1, 1))
+MASS::boxcox(Model.1a)
+
+```
+
+According to the output of BoxCox, we need a log transformation to the response variable $Y$, that is
+
+$$Y_{new} = \log Y.$$
+
+```{r}
+# log transformation to the response variable Y
+train_data$BETAPLASMA_log = log(train_data$BETAPLASMA)
+validation_data$BETAPLASMA_log = log(validation_data$BETAPLASMA)
+
+fit_test1 = lm(BETAPLASMA_log ~ SEX + SMOKSTAT + VITUSE + AGE + QUETELET + FAT + FIBER + ALCOHOL_Category + CHOLESTEROL + BETADIET + RETDIET, data = train_data)
+summary(fit_test1)
+
+par(mfrow = c(1, 2))
+plot(fit_test1,which=1:2)
+par(mfrow = c(1, 1))
+MASS::boxcox(fit_test1) 
+
+```
+
+@@@ Based on the residuals vs fitted values plot, we need to add some interaction terms or quadratic terms in to the first-order model.
+
+# 2. Model for BETAPLASMA
+
+## 2-1. Model Construction for BETAPLASMA
+
+Regressing the full model.
+
+We can see this full model is unidentifiable, so we can say the column
+of the design matrix X in this full model is linearly dependent. Thus,
+we can drop all the interaction terms to make the model identifiable,
+which can also make further model easy to interpret.
+
+```{r}
+# full model
+fit_full_all = lm(BETAPLASMA_log ~ ((AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET)^2 +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE), 
+    data = train_data)
+
+#summary(fit_full_all)
+
+# full model without interaction terms (but we do not need the output)
+fit_full = lm(BETAPLASMA_log ~ (AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE), 
+    data = train_data)
+
+#summary(fit_full)
+
+```
+
+## 2-2. Model search for BETAPLASMA
+
+### 2-2-1. AIC
+
+@@@ Since the number of X variables is quite large and variables containing interaction terms and quadratic terms may have multicollinearity, we should use forward stepwise procedures to search local best model.
+
+```{r}
+scope_formula <- as.formula(
+  "~ ((AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET)^2 +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE)"
+)
+
+null_model <- lm(BETAPLASMA_log ~ 1, data = train_data)
+
+# forward stepwise procedures
+best_model_aic <- stepAIC(null_model, 
+                          scope = list(upper = scope_formula, lower = ~1), 
+                          direction = "both",  # forward stepwise procedures
+                          k = 2, 
+                          trace = FALSE)
+
+# checking the best model with criterion AIC
+best_model_aic$anova
+summary(best_model_aic)
+vif_values <- vif(best_model_aic)
+print(vif_values)
+```
+
+
+@@@ Since there are some quadratic and interaction terms in the model, there may exist multicollinearity. Then, we can use standardization method to reduce the influence of multicollinearity.
+
+```{r}
+# standardize train_data and validation_data
+train_data2 <- train_data
+validation_data2 = validation_data
+
+train_data2$QUETELET <- scale(train_data$QUETELET)
+train_data2$FIBER <- scale(train_data$FIBER)
+train_data2$FAT <- scale(train_data$FAT)
+train_data2$AGE <- scale(train_data$AGE)
+train_data2$CHOLESTEROL <- scale(train_data$CHOLESTEROL)
+train_data2$BETADIET <- scale(train_data$BETADIET)
+train_data2$RETDIET <- scale(train_data$RETDIET)
+# train_data2$BETAPLASMA_log <- scale(train_data$BETAPLASMA_log)
+
+
+validation_data2$QUETELET <- scale(validation_data$QUETELET)
+validation_data2$FIBER <- scale(validation_data$FIBER)
+validation_data2$FAT <- scale(validation_data$FAT)
+validation_data2$AGE <- scale(validation_data$AGE)
+validation_data2$CHOLESTEROL <- scale(validation_data$CHOLESTEROL)
+validation_data2$BETADIET <- scale(validation_data$BETADIET)
+validation_data2$RETDIET <- scale(validation_data$RETDIET)
+# validation_data2$BETAPLASMA_log <- scale(validation_data$BETAPLASMA_log)
+
+
+par(mfrow = c(1, 1))
+pairs(train_data2[,c(4:13,15)])
+cor(train_data2[,c(4:13,15)])
+
+# regressing model in standardized data
+best_model_aic_update_std <- lm(formula = BETAPLASMA_log ~ QUETELET + SMOKSTAT + I(FIBER^2) + 
+    I(CHOLESTEROL^2) + BETADIET + VITUSE + AGE + I(AGE^2) + BETADIET:VITUSE + 
+    SMOKSTAT:I(CHOLESTEROL^2), data = train_data2)
+
+# checking
+summary(best_model_aic_update_std)
+print(vif_values)
+vif_values <- vif(best_model_aic_update_std)
+print(vif_values)
+```
+
+According to the value of VIF, we can see there is a mild
+multicollinearity in the model. Then, we can use forward stepwise
+procedure again starting form "best_model_aic_update_std" model.
+
+
+```{r}
+Model.1f <- lm(formula = BETAPLASMA_log ~ QUETELET + SMOKSTAT + I(FIBER^2) + 
+    I(CHOLESTEROL^2) + BETADIET + VITUSE + AGE + I(AGE^2) + BETADIET:VITUSE, data = train_data2)
+summary(Model.1f)
+
+vif_values <- vif(Model.1f)
+print(vif_values)
+```
+
+After reoperating Stepwise, we do obtain a greater model.
+
+**Final Model based on AIC:**
+
+Because BETADIET and I(AGE^2) are not significant enough, we test whether to remove these two variables by F-test.
+
+Then, we can use anova to check.
+
+```{r}
+# Test delete BETADIET:VITUSE
+Model.1h = lm(BETAPLASMA_log ~ QUETELET + SMOKSTAT + I(FIBER^2) + I(CHOLESTEROL^2) + BETADIET + VITUSE + AGE + I(AGE^2), data = train_data2)
+summary(Model.1h)
+anova(Model.1h, Model.1f)
+
+
+# Test delete I(AGE^2)
+Model.1g = lm(BETAPLASMA_log ~ QUETELET + SMOKSTAT + I(FIBER^2) + I(CHOLESTEROL^2) + BETADIET + VITUSE + AGE + BETADIET:VITUSE, data = train_data2)
+summary(Model.1g)
+anova(Model.1g, Model.1f)
+
+```
+
+
+According to the outputs of anova, we should delete I(AGE^2) manually and retain BETADIET:VITUSE. Therefore, we can obtain the final model.
+
+```{r}
+final_model_aic = Model.1g
+summary(Model.1g)
+
+# checking model
+vif_values <- vif(Model.1g)
+print(vif_values)
+```
+
+According to the outputs, we can see every variable is significant under
+0.05 level in the model and achieved a high R\^2_adjusted under this
+topic.
+
+According to the Hierarchical principle, we can try to add the
+corresponding lower-order terms with respect to those higher-order terms
+into the model.
+
+### 2-2-2. BIC
+
+Similarly, we can use BIC to search the "best" model.
+
+```{r}
+scope_formula <- as.formula(
+  "~ ((AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET)^2 +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE)"
+)
+
+null_model <- lm(BETAPLASMA_log ~ 1, data = train_data2)
+
+# forward stepwise procedures
+best_model_bic <- stepAIC(null_model, 
+                          scope = list(upper = scope_formula, lower = ~1), 
+                          direction = "both",  # forward stepwise procedures
+                          k = log(nrow(train_data2)), 
+                          trace = FALSE)
+
+# checking the best model with criterion BIC
+best_model_bic$anova
+summary(best_model_bic)
+
+# Compairing final model selected by AIC and BIC
+anova(best_model_bic, Model.1g)
+```
+
+Since BIC imposes a stricter penalty on model complexity, the model
+selected by BIC tends to include fewer X variables. However, using BIC
+to searching model resulting in a significant decrease in adjusted R\^2,
+making us more inclined to choose the model selected by AIC.
+Furthermore, the model selected by BIC can, to some extent, be
+considered a sub-model of the final model selected by AIC, which
+provides partial support for the model chosen by AIC.
+
+Besides, according to the anova result, we can see adding extra
+variables is significant, so we should choose model searched by AIC.
+
+## 2-3. Model Validation for BETAPLASMA
+
+The final model is BETAPLASMA_log \~ QUETELET + SMOKSTAT + I(FIBER\^2) +
+I(CHOLESTEROL\^2) + BETADIET + VITUSE + AGE + BETADIET:VITUSE.
+
+### 2-3-1. External Validation
+
+```{r}
+# Mean Squared Prediction Error (MSPE)
+actual_values <- validation_data2$BETAPLASMA_log
+predicted_values <- predict(Model.1g, newdata = validation_data2)
+MSPE = sum((actual_values - predicted_values)^2) / nrow(validation_data2)
+MSPE
+
+SSE = sum((Model.1g$residuals)^2)
+SSE/nrow(train_data2)
+```
+
+Since $MSPE$ is not much larger than $\frac{SSE}{n}$, this indicates no
+severe over-fitting by the model. Besides, this model has a certain
+degree of predictive power.
+
+### 2-3-2. Internal Validation
+
+```{r}
+# Mallows' Cp
+p = length(coef(Model.1g))
+sigma2 = summary(Model.1g)$sigma^2
+Cp = SSE/sigma2 - (nrow(train_data2) - 2 * p)
+Cp
+p
+
+# PRESSp
+residuals <- resid(Model.1g)
+h <- hatvalues(Model.1g)
+PRESSp <- sum((residuals / (1 - h))^2)
+PRESSp
+SSE
+```
+
+We have
+$$C_p = 12, p = 12\quad and \quad Press_p = 108.176, SSE_p = 98.21809.$$
+Since $C_p$ is not much larger than $p$ and $Press_p$ is not much larger
+than $SSE_p$, we can say there is no severe over-fitting and no
+substantial model bias.
+
+
+### 2-3-3. Regression on the entire data
+
+```{r}
+data_entire2 = rbind(train_data2,validation_data2)
+Model.1entire = lm(BETAPLASMA_log ~ QUETELET + SMOKSTAT + I(FIBER^2) + I(CHOLESTEROL^2) + BETADIET + VITUSE + AGE + BETADIET:VITUSE, data = data_entire2)
+summary(Model.1entire)
+```
+
+
+
+
+
+
+## 2-4. Model Explanation for BETAPLASMA
+
+**BETAPLASMA_log \~ QUETELET + SMOKSTAT + I(FIBER\^2) +
+I(CHOLESTEROL\^2) + BETADIET + VITUSE + AGE + BETADIET:VITUSE**
+
+The function is
+$$Y_i = 4.47487 - 0.21170*X_{QUETELET,i} + 0.27737*D_{SMOKSTAT,FORMER} +0.4344 * D_{SMOKSTAT,NEVER} - 0.08483 * X_{BETADIET,i} + 0.10096 * X_{AGE,i} $$
+$$+0.03956 * X^2_{FIBER,i} -0.04661 * X^2_{CHOLESTEROL,i} + 0.29269 * D_{VITUSE,NOTOFTEN} + 0.22276 * D_{VITUSE,OFTEN}  $$
+$$+0.16958 * X_{BETADIET,i} * D_{VITUSE,NOTOFTEN} + 0.33884 * X_{BETADIET,i} * D_{VITUSE,OFTEN}$$
+
+1.  Scatter plots show the relationship between continuous and dependent variables
+
+```{r}
+library(ggplot2)
+
+
+custom_theme <- theme_minimal(base_size = 14) +
+  theme(
+    panel.grid.major = element_line(color = "gray90", linetype = "dashed"),
+    panel.grid.minor = element_blank(),
+    axis.line = element_line(color = "black", size = 0.8), 
+    axis.ticks = element_line(color = "black", size = 0.5), 
+    axis.ticks.length = unit(0.2, "cm"), 
+    plot.title = element_text(size = 16, face = "bold", hjust = 0.5), 
+    axis.title.x = element_text(size = 14, face = "italic"), 
+    axis.title.y = element_text(size = 14, face = "italic"),  
+    axis.text = element_text(size = 12),                     
+    legend.position = "right",                               
+    legend.justification = "center",                         
+    legend.direction = "vertical",                         
+    legend.background = element_rect(fill = "white", color = "black"),  
+    legend.title = element_text(size = 12, face = "bold"),
+    legend.text = element_text(size = 10)                  
+  )
+
+ggplot(train_data2, aes(x = QUETELET, y = BETAPLASMA_log, color = SMOKSTAT, shape = SMOKSTAT)) +
+  geom_point(size = 2, alpha = 0.8) + 
+  geom_smooth(method = "lm", se = FALSE, size = 0.8) + 
+  scale_color_manual(values = c("#E63946", "#457B9D", "#f79059")) + 
+  scale_shape_manual(values = c(16, 17, 18)) + 
+  labs(title = "QUETELET vs BETAPLASMA_log (SMOKSTAT)", 
+       x = "QUETELET (BMI)", 
+       y = "BETAPLASMA_log (Response)") +
+  custom_theme
+
+
+ggplot(train_data2, aes(x = QUETELET, y = BETAPLASMA_log, color = VITUSE, shape = VITUSE)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.8) +
+  scale_color_manual(values = c("#E63946", "#457B9D", "#f79059")) +
+  scale_shape_manual(values = c(15, 17, 19)) +
+  labs(title = "QUETELET vs BETAPLASMA_log (VITUSE)", 
+       x = "QUETELET (BMI)", 
+       y = "BETAPLASMA_log (Response)") +
+  custom_theme
+
+ggplot(train_data2, aes(x = AGE, y = BETAPLASMA_log, color = SMOKSTAT, shape = SMOKSTAT)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.8) +
+  scale_color_manual(values = c("#E63946", "#457B9D", "#f79059")) +
+  scale_shape_manual(values = c(16, 17, 18)) +
+  labs(title = "AGE vs BETAPLASMA_log (SMOKSTAT)", 
+       x = "AGE (Years)", 
+       y = "BETAPLASMA_log (Response)") +
+  custom_theme
+
+ggplot(train_data2, aes(x = AGE, y = BETAPLASMA_log, color = VITUSE, shape = VITUSE)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.8) +
+  scale_color_manual(values = c("#E63946", "#457B9D", "#f79059")) +
+  scale_shape_manual(values = c(15, 17, 19)) +
+  labs(title = "AGE vs BETAPLASMA_log (VITUSE)", 
+       x = "AGE (Years)", 
+       y = "BETAPLASMA_log (Response)") +
+  custom_theme
+```
+
+2.  Visualization of quadratic terms of nonlinear variables such as FIBER and CHOLESTEROL
+
+```{r}
+
+ggplot(train_data2, aes(x = FIBER, y = BETAPLASMA_log)) +
+  geom_point() +
+  stat_smooth(method = "lm", formula = y ~ poly(x, 2), color = "blue") +  # 二次拟合曲线
+  labs(title = "FIBER (Quadratic) vs BETAPLASMA_log", x = "FIBER", y = "BETAPLASMA_log") +
+  theme_minimal()
+
+
+```
+
+3.  Visualization of categorical variables and interaction terms
+
+```{r}
+ggplot(train_data2, aes(x = BETADIET, y = BETAPLASMA_log, color = VITUSE)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = FALSE) +  # 添加回归线
+  labs(title = "Interaction: BETADIET and VITUSE", x = "BETADIET", y = "BETAPLASMA_log") +
+  theme_minimal()
+```
+
+4.  Box plot of categorical variables
+
+```{r}
+ggplot(train_data2, aes(x = VITUSE, y = BETAPLASMA_log, fill = VITUSE)) +
+  geom_boxplot() +
+  labs(title = "VITUSE vs BETAPLASMA_log", x = "VITUSE", y = "BETAPLASMA_log") +
+  theme_minimal()
+
+```
+
+# 3. Model for RETPLASMA
+
+## 3-1. Model Construction for RETPLASMA
+
+```{r}
+
+# Preliminary regression (First-order model)
+fit_pre2 = lm(RETPLASMA ~ SEX + SMOKSTAT + VITUSE + AGE + QUETELET + FAT + FIBER + ALCOHOL_Category + CHOLESTEROL + BETADIET + RETDIET, data = train_data2)
+summary(fit_pre2)
+
+par(mfrow = c(1, 2))
+plot(fit_pre2,which=1:2)
+MASS::boxcox(fit_pre2)
+
+```
+
+According to the output of BoxCox, we need a log transformation to the
+response variable $Y$, that is
+
+$$Y_{new} = \log Y.$$
+
+```{r}
+# log transformation to the response variable Y
+train_data$RETPLASMA_log = log(train_data$RETPLASMA)
+validation_data$RETPLASMA_log = log(validation_data$RETPLASMA)
+
+train_data2$RETPLASMA_log <- train_data$RETPLASMA_log
+validation_data2$RETPLASMA_log <- validation_data$RETPLASMA_log
+
+fit_test2 = lm(RETPLASMA_log ~ SEX + SMOKSTAT + VITUSE + AGE + QUETELET + FAT + FIBER + ALCOHOL_Category + CHOLESTEROL + BETADIET + RETDIET, data = train_data2)
+summary(fit_test2)
+
+par(mfrow = c(1, 2))
+plot(fit_test2,which=1:2)
+
+boxcox(fit_test2, lambda = seq(-1, 3, 0.01))
+
+```
+
+**We don't need extra transformation for \$Y\_{new}, since**
+$\lambda = 1$ is in the $95\%$ confidence interval.
+
+Based on the residuals vs fitted values plot, we need to add some
+interaction terms or quadratic terms in to the first-order model.
+
+```{r}
+# full model
+fit_full_all2 = lm(RETPLASMA_log ~ ((AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET)^2 +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE), 
+    data = train_data2)
+
+#summary(fit_full_all2)
+
+```
+
+We can see this full model is unidentifiable, so we can say the column
+of the design matrix X in this full model is linearly dependent. Thus,
+we can drop all the interaction terms to make the model identifiable,
+which can also make further model easy to interpret.
+
+```{r}
+# full model without interaction terms
+fit_full2 = lm(RETPLASMA_log ~ (AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE), 
+    data = train_data2)
+
+#summary(fit_full2)
+
+
+```
+
+## 3-2. Model Search for RETPLASMA
+
+### 3-2-1. AIC
+
+Since the number of X variables is quite large and variables containing
+interaction terms and quadratic terms may have multicollinearity, we
+should use forward stepwise procedures to search local best model.
+
+```{r}
+scope_formula2 <- as.formula(
+  "~ ((AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET)^2 +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE)"
+)
+
+null_model2 <- lm(RETPLASMA_log ~ 1, data = train_data2)
+
+# forward stepwise procedures
+best_model_aic2 <- stepAIC(null_model2, 
+                          scope = list(upper = scope_formula2, lower = ~1), 
+                          direction = "both",  # forward stepwise procedures
+                          k = 2, 
+                          trace = FALSE)
+
+# checking the best model with criterion AIC
+best_model_aic2$anova
+
+summary(best_model_aic2)
+vif_values <- vif(best_model_aic2)
+print(vif_values)
+```
+
+Try to do stepwise again to find a better model
+
+```{r}
+
+optimized_model <- stepAIC(best_model_aic2, direction = "both")
+summary(optimized_model)
+
+```
+
+There was no improvement after using the stepwise method again
+
+
+### 3-2-2. BIC
+
+```{r}
+scope_formula3 <- as.formula(
+  "~ ((AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET)^2 +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE)"
+)
+
+null_model3 <- lm(RETPLASMA_log ~ 1, data = train_data2)
+
+# forward stepwise procedures
+best_model_bic2 <- stepAIC(null_model3, 
+                          scope = list(upper = scope_formula3, lower = ~1), 
+                          direction = "both",  # forward stepwise procedures
+                          k = log(nrow(train_data2)), 
+                          trace = FALSE)
+
+# checking the best model with criterion BIC
+best_model_bic2$anova
+
+summary(best_model_bic2)
+
+```
+
+```{r}
+# Compairing final model selected by AIC and BIC
+anova(best_model_bic2, optimized_model)
+```
+
+according to the anova result, we can see adding extra variables is
+significant, so we should choose model searched by AIC.
+
+```{r}
+final_model_RETPLASMA = optimized_model
+summary(final_model_RETPLASMA)
+
+par(mfrow = c(1, 2))
+plot(optimized_model,which=1:2)
+```
+
+Visualization
+
+```{r}
+
+par(mfrow = c(1, 1))
+pairs(train_data2[,c(4:11,16)])
+cor(train_data2[,c(4:11,16)])
+
+```
+
+## 3-3. Model Validation for RETPLASMA
+
+The final model is RETPLASMA_log \~ AGE + ALCOHOL_Category + BETADIET +
+BETADIET\^2.
+
+### 3-3-1. External validation
+
+```{r}
+# Mean Squared Prediction Error (MSPE)
+actual_values2 <- validation_data2$RETPLASMA_log
+predicted_values2 <- predict(final_model_RETPLASMA, newdata = validation_data2)
+MSPE2 = sum((actual_values2 - predicted_values2)^2) / nrow(validation_data2)
+MSPE2
+
+SSE2 = sum((final_model_RETPLASMA$residuals)^2)
+SSE2/nrow(train_data2)
+```
+
+Since $MSPE$ is not much larger than $\frac{SSE}{n}$, this indicates no
+severe over-fitting by the model.
+
+### 3-3-2. internal validation
+
+```{r}
+# Mallows' Cp
+p_2 = length(coef(final_model_RETPLASMA))
+sigma2_2 = summary(final_model_RETPLASMA)$sigma^2
+Cp_2 = SSE2/sigma2_2 - (nrow(train_data2) - 2 * p_2)
+Cp_2
+p_2
+
+# PRESSp
+residuals2 <- resid(final_model_RETPLASMA)
+h2 <- hatvalues(final_model_RETPLASMA)
+PRESSp2 <- sum((residuals2 / (1 - h2))^2)
+PRESSp2
+SSE2
+
+
+```
+
+We have
+$$C_p = 6, p = 6\quad and \quad Press_p = 26.173, SSE_p = 24.96065$$
+Since $C_p$ is not much larger than $p$ and $Press_p$ is not much larger
+than $SSE_p$, we can say there is no severe over-fitting and no
+substantial model bias.
+
+
+### 3-3-3. Regression on the entire data
+
+```{r}
+data_entire2 = rbind(train_data2,validation_data2)
+Model.2e = lm(RETPLASMA_log ~ AGE + ALCOHOL_Category + I(BETADIET^2) + BETADIET, data = data_entire2)
+summary(Model.2e)
+```
+
+
+
+
+## 3-4. Model Explanation for RETPLASMA
+
+Even though the $R^2$ is quite small in this regression model, we can try to find some relationship between response variable and predictors.
+
+```{r}
+
+# 1. The relationship between continuous variable and dependent variable
+# AGE 与 RETPLASMA_log
+ggplot(train_data2, aes(x = AGE, y = RETPLASMA_log)) +
+  geom_point(size = 2, alpha = 0.8, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, color = "darkred", size = 0.8) + 
+  labs(title = "AGE vs RETPLASMA_log", x = "AGE (Years)", y = "RETPLASMA_log") +
+  theme_minimal()
+
+# BETADIET 与 RETPLASMA_log
+ggplot(train_data2, aes(x = BETADIET, y = RETPLASMA_log)) +
+  geom_point(size = 2, alpha = 0.8, color = "steelblue") +
+  geom_smooth(method = "lm", se = FALSE, color = "darkred", size = 0.8) +
+  labs(title = "BETADIET vs RETPLASMA_log", x = "BETADIET", y = "RETPLASMA_log") +
+  theme_minimal()
+
+# 2. Relationship between nonlinear variable (BETADIET^2) and dependent variable
+ggplot(train_data2, aes(x = BETADIET, y = RETPLASMA_log)) +
+  geom_point(size = 2, alpha = 0.8, color = "steelblue") +
+  stat_smooth(method = "lm", formula = y ~ poly(x, 2), color = "darkgreen", size = 1) +  
+  labs(title = "BETADIET (Quadratic) vs RETPLASMA_log", x = "BETADIET", y = "RETPLASMA_log") +
+  theme_minimal()
+
+# 3. Visualization of categorical variables and interaction terms
+ggplot(train_data2, aes(x = BETADIET, y = RETPLASMA_log, color = ALCOHOL_Category)) +
+  geom_point(size = 2, alpha = 0.8) +
+  geom_smooth(method = "lm", se = FALSE, size = 0.8) +
+  labs(title = "Interaction: BETADIET and ALCOHOL_Category", x = "BETADIET", y = "RETPLASMA_log") +
+  scale_color_manual(values = c("#E63946", "#457B9D", "#f79059")) + 
+  theme_minimal()
+
+# 4. Box plot of categorical variables
+ggplot(train_data2, aes(x = ALCOHOL_Category, y = RETPLASMA_log, fill = ALCOHOL_Category)) +
+  geom_boxplot() +
+  scale_fill_manual(values = c("#E63946", "#457B9D", "#f79059")) +  
+  labs(title = "ALCOHOL_Category vs RETPLASMA_log", x = "ALCOHOL_Category", y = "RETPLASMA_log") +
+  theme_minimal()
+
+```
+
+
+
+
+
+
+
+
+
+## 4. model diagnostics (Outlyer Analysis)
+
+After construct the model for two response variables, let's consider if
+there exists some influencial outlyers in out database.
+
+### y outlyer
+
+For BETAPLASMA_log
+
+```{r}
+e<-final_model_aic$residuals ##ordinary residuals 
+h<-influence(final_model_aic)$hat ##diagonals of the hat matrix: a.k.a. leverage values 
+de<-e/(1-h) ##deleted residuals 
+plot(e,de, xlab="residuals", ylab="deleted residuals")
+abline(0,1)
+
+summary(h)
+
+#studentized deleted residuals
+library(MASS)
+stu.res.del <- studres(final_model_aic)
+head(sort(abs(stu.res.del), decreasing=TRUE))
+
+```
+
+```{r}
+stu.res.del <- studres(final_model_aic)
+head(sort(abs(stu.res.del), decreasing=TRUE))
+
+# Bonferroni 's Threshold
+n = nrow(train_data2)
+p = length(coef(final_model_aic))
+qt(1-0.1/(2*n), n-p-1) #Bonferroni's Threshold (alpha=0.1, n=sample size)
+```
+
+1.  Based on the scatter plot, we can see when we delete single case,
+    the delete residual do not change significantly comparing to the
+    residual. Thus, there is no outlyer in Y.
+
+2.  And there is no T statistic larger than Bonferroni 's Threshold, so
+    there is no outlyer in Y.
+
+### X outlyer
+
+For BETAPLASMA_log:
+
+We can use leverage to check outlying in X.
+
+```{r}
+# checking case which is larger than 2p/n
+h <- influence(final_model_aic)$hat
+p <- length(coef(final_model_aic))
+sort(h[which(h>2*p/n)], decreasing = TRUE)
+
+
+# Calculating Cook's distance
+res <- final_model_aic$residuals
+mse <- anova(final_model_aic)["Residuals", 3]
+cook.d <- res^2*h/(p*mse*(1-h)^2)
+
+# identify influential cases
+sort(cook.d[which(cook.d>4/(n-p))], decreasing = TRUE)
+
+# Cook’s distance plot
+plot(final_model_aic, which=4)
+
+# the Residuals vs. Leverage plot
+plot(final_model_aic, which=5)
+```
+
+Based on the outputs, we can see the Cook's distance is pretty small for
+all cases. But we can still try to remove the case labeled as "152".
+
+```{r}
+which(rownames(train_data2)=="152") 
+
+fit.152 = lm(BETAPLASMA_log ~ QUETELET + SMOKSTAT + I(FIBER^2) + 
+    I(CHOLESTEROL^2) + BETADIET + VITUSE + AGE + BETADIET:VITUSE, 
+    data = train_data2, subset=setdiff(rownames(train_data2), "152"))
+
+# compare regression coefficients
+rbind(final_model_aic$coefficients,fit.152$coefficients)
+```
+As can be seen, there is little difference in these two fits, so here even the most influential case, namely case 152, can be retained.
+
+Therefore, there is no influencial case in BETAPLASMA model.
+
+
+
+
+**Similarly, we can check for the RETPLASMA model.**
+
+```{r}
+
+e<-final_model_RETPLASMA$residuals ##ordinary residuals 
+h<-influence(final_model_RETPLASMA)$hat ##diagonals of the hat matrix: a.k.a. leverage values 
+de<-e/(1-h) ##deleted residuals 
+plot(e,de, xlab="residuals", ylab="deleted residuals")
+abline(0,1)
+
+summary(h)
+
+#studentized deleted residuals
+library(MASS)
+stu.res.del <- studres(final_model_RETPLASMA)
+head(sort(abs(stu.res.del), decreasing=TRUE))
+
+
+stu.res.del <- studres(final_model_RETPLASMA)
+head(sort(abs(stu.res.del), decreasing=TRUE))
+
+
+# Bonferroni 's Threshold
+n = nrow(train_data2)
+p = length(coef(final_model_RETPLASMA))
+qt(1-0.1/(2*n), n-p-1) #Bonferroni's Threshold (alpha=0.1, n=sample size)
+```
+
+```{r}
+# checking case which is larger than 2p/n
+h <- influence(final_model_RETPLASMA)$hat
+p <- length(coef(final_model_RETPLASMA))
+sort(h[which(h>2*p/n)], decreasing = TRUE)
+
+
+# Calculating Cook's distance
+res <- final_model_RETPLASMA$residuals
+mse <- anova(final_model_RETPLASMA)["Residuals", 3]
+cook.d <- res^2*h/(p*mse*(1-h)^2)
+
+# identify influential cases
+sort(cook.d[which(cook.d>4/(n-p))], decreasing = TRUE)
+
+# Cook’s distance plot
+plot(final_model_RETPLASMA, which=4)
+
+# the Residuals vs. Leverage plot
+plot(final_model_RETPLASMA, which=5)
+
+```
+
+Therefore, there is no influencial case in RETPLASMA model.
+
+
+
+*Note：*
+
+We noticed that there was a previous data on extreme drinking, and intuitively, this is an influencial case, which we will examine below:
+
+This data is not even outlyer when regression BETAPLASMA_log, focus on whether it is influencial in RETPLASMA_log regression.
+
+Testing
+```{r}
+which(rownames(train_data2)=="62") 
+
+
+fit.62 = lm(RETPLASMA_log ~ AGE + ALCOHOL_Category + I(BETADIET^2) + BETADIET, data = train_data2, subset=setdiff(rownames(train_data2), "62"))
+
+# compare regression coefficients
+rbind(final_model_RETPLASMA$coefficients,fit.62$coefficients)
+
+```
+
+This case (62 lines in the data), so this data is not an influencial data. Similarly, 75 and 81 are not influencial cases.
+
+
+
+
+# 5. Model Extension
+
+Since we try to investigate the relationship between personal
+characteristics and two response variables, we want to use model to
+achieve variable selection. Then, let's consider the Lasso regression.
+
+## 5-1. Lasso
+
+### 5-1-1. For BETAPLASMA_log
+
+```{r}
+library(glmnet)
+
+fit_full = lm(BETAPLASMA_log ~ (AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE), 
+    data = train_data2)
+
+
+X <- model.matrix(fit_full)[, -1]  
+y <- train_data2$BETAPLASMA_log    
+
+# Lasso regression 
+lasso_model <- glmnet(X, y, alpha = 1)  
+plot(lasso_model, xvar = "lambda", label = TRUE) 
+
+# Perform Cross-Validation to Find Optimal Lambda
+set.seed(206)
+cv_lasso <- cv.glmnet(X, y, alpha = 1)  
+best_lambda <- cv_lasso$lambda.min      
+plot(cv_lasso)  
+
+# 4.  Fit the Final Model with Optimal Lambda
+lasso_final_BETAPLASMA <- glmnet(X, y, alpha = 1, lambda = best_lambda)
+
+# 5. Extract Non-Zero Coefficients
+final_coefficients <- coef(lasso_final_BETAPLASMA)  
+print(final_coefficients)  
+
+# 6. Compute Predictions
+predictions <- predict(lasso_final_BETAPLASMA, s = best_lambda, newx = X)
+
+
+
+nonzero_coef <- coef(lasso_final_BETAPLASMA, s = "lambda.min")
+nonzero_coef_df <- as.data.frame(as.matrix(nonzero_coef))
+colnames(nonzero_coef_df) <- c("Coefficient")
+nonzero_coef_df <- nonzero_coef_df[nonzero_coef_df$Coefficient != 0, , drop = FALSE]
+nonzero_coef_df <- cbind(Variable = rownames(nonzero_coef_df), nonzero_coef_df)
+rownames(nonzero_coef_df) <- NULL
+
+print(nonzero_coef_df)
+
+
+# Checking model
+ssr <- sum((y - predictions)^2)
+ssto <- sum((y - mean(y))^2)
+r2 <- 1 - ssr / ssto
+cat("R-squared (Training Data):", r2, "\n")
+
+mse <- ssr / (nrow(train_data2) - nrow(nonzero_coef_df))
+cat("Mean Squared Error (MSE):", mse, "\n")
+
+# Remove interaction term
+nonzero_coef_df <- nonzero_coef_df[nonzero_coef_df$Variable != "(Intercept)", ]
+
+# plot for coefficient value
+ggplot(nonzero_coef_df, aes(x = reorder(Variable, Coefficient), y = Coefficient)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  
+  labs(
+    title = "Non-zero Coefficients from Lasso Regression",
+    x = "Variables",
+    y = "Coefficient Value"
+  ) +
+  theme_minimal()
+
+
+
+```
+
+
+
+Lasso regression function:
+
+BETAPLASMA_log \~ QUETELET + I(CHOLESTEROL\^2) + SMOKSTATNEVER +
+AGE:ALCOHOL_CategoryNormal + QUETELET:SMOKSTATFORMER +
+FIBER:ALCOHOL_CategoryNormal + FIBER:SMOKSTATNEVER + FIBER:VITUSEOFTEN +
+CHOLESTEROL:ALCOHOL_CategoryHeavy + CHOLESTEROL:SEXMALE +
+CHOLESTEROL:SMOKSTATFORMER + BETADIET:ALCOHOL_CategoryNormal +
+BETADIET:VITUSEOFTEN + I(FIBER\^2):SMOKSTATNEVER
+
+### 5-1-2. For RETPLASMA_log
+
+
+```{r}
+fit_full = lm(RETPLASMA_log ~ (AGE + QUETELET + FAT + FIBER + CHOLESTEROL + BETADIET + RETDIET +
+      I(AGE^2) + I(QUETELET^2) + I(FAT^2) + I(FIBER^2) + I(CHOLESTEROL^2) +
+      I(BETADIET^2) + I(RETDIET^2)) *
+      (ALCOHOL_Category + SEX + SMOKSTAT + VITUSE), 
+    data = train_data2)
+
+
+
+X <- model.matrix(fit_full)[, -1]  
+y <- train_data2$RETPLASMA_log    
+
+# Perform Lasso Regression
+lasso_model <- glmnet(X, y, alpha = 1) 
+plot(lasso_model, xvar = "lambda", label = TRUE)  
+
+# Perform Cross-Validation to Find Optimal Lambda
+set.seed(206)
+cv_lasso <- cv.glmnet(X, y, alpha = 1)  
+best_lambda <- cv_lasso$lambda.min      
+plot(cv_lasso)  
+
+# Fit the Final Model with Optimal Lambda
+lasso_final_RETPLASMA <- glmnet(X, y, alpha = 1, lambda = best_lambda)
+
+# Extract Non-Zero Coefficients
+final_coefficients <- coef(lasso_final_RETPLASMA)  # 提取非零系数
+print(final_coefficients)  # 打印结果
+
+# Prediction
+predictions <- predict(lasso_final_RETPLASMA, s = best_lambda, newx = X)
+
+
+nonzero_coef <- coef(lasso_final_RETPLASMA, s = "lambda.min")
+nonzero_coef_df <- as.data.frame(as.matrix(nonzero_coef))
+colnames(nonzero_coef_df) <- c("Coefficient")
+nonzero_coef_df <- nonzero_coef_df[nonzero_coef_df$Coefficient != 0, , drop = FALSE]
+nonzero_coef_df <- cbind(Variable = rownames(nonzero_coef_df), nonzero_coef_df)
+rownames(nonzero_coef_df) <- NULL
+
+print(nonzero_coef_df)
+
+
+
+# Checking model
+ssr <- sum((y - predictions)^2)
+ssto <- sum((y - mean(y))^2)
+r2 <- 1 - ssr / ssto
+cat("R-squared (Training Data):", r2, "\n")
+
+mse <- ssr / (nrow(train_data2) - nrow(nonzero_coef_df))
+cat("Mean Squared Error (MSE):", mse, "\n")
+
+
+
+nonzero_coef_df <- nonzero_coef_df[nonzero_coef_df$Variable != "(Intercept)", ]
+
+ggplot(nonzero_coef_df, aes(x = reorder(Variable, Coefficient), y = Coefficient)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +  
+  labs(
+    title = "Non-zero Coefficients from Lasso Regression",
+    x = "Variables",
+    y = "Coefficient Value"
+  ) +
+  theme_minimal()
+
+```
+
+
+
+
+
